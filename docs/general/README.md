@@ -9,10 +9,11 @@ This directory is the durable context for developers and AI agents. Read the doc
 3. `general/use-cases.md`
 4. `general/system-flow.md`
 5. `general/folder-structure.md`
-6. `backend/architecture.md`, then `backend/data-model.md`
-7. `backend/api-contract.md` and `backend/security.md`
-8. `frontend/frontend-architecture.md`
-9. `general/development-roadmap.md` and `backend/deployment.md`
+6. `databasestructure.md`
+7. `backend/architecture.md`, then `backend/data-model.md`
+8. `backend/api-contract.md` and `backend/security.md`
+9. `frontend/frontend-architecture.md`
+10. `general/development-roadmap.md` and `backend/deployment.md`
 
 ## Change rule
 
