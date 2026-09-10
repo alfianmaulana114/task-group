@@ -10,9 +10,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/USERNAME-GITHUB-KAMU/task-group/backend/internal/config"
-	"github.com/USERNAME-GITHUB-KAMU/task-group/backend/internal/platform"
-	"github.com/USERNAME-GITHUB-KAMU/task-group/backend/internal/server"
+	"github.com/alfianhamzah/task-group/backend/internal/config"
+	"github.com/alfianhamzah/task-group/backend/internal/platform"
+	"github.com/alfianhamzah/task-group/backend/internal/server"
 )
 
 func main() {

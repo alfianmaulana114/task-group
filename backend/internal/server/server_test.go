@@ -5,8 +5,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/USERNAME-GITHUB-KAMU/task-group/backend/internal/config"
-	"github.com/USERNAME-GITHUB-KAMU/task-group/backend/internal/platform"
+	"github.com/alfianhamzah/task-group/backend/internal/config"
+	"github.com/alfianhamzah/task-group/backend/internal/platform"
 )
 
 func TestHealthz(t *testing.T) {
@@ -25,3 +25,4 @@ func TestHealthz(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 }
+

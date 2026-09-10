@@ -1,10 +1,13 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -12,6 +15,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 )
+
+func hashToken(raw string) string {
+	h := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(h[:])
+}
 
 type Handler struct {
 	DB        *pgxpool.Pool
@@ -59,6 +67,11 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !strings.Contains(req.Email, "@") || !strings.Contains(req.Email, ".") {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid email format"})
+		return
+	}
+
 	if len(req.Password) < 8 {
 		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "password must be at least 8 characters"})
 		return
@@ -95,7 +108,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 
 	_, err = h.DB.Exec(ctx,
 		`INSERT INTO refresh_sessions (user_id, session_token_hash, expires_at) VALUES ($1, $2, $3)`,
-		userID, tokens.RefreshToken, time.Now().Add(7*24*time.Hour),
+		userID, hashToken(tokens.RefreshToken), time.Now().Add(7*24*time.Hour),
 	)
 	if err != nil {
 		log.Printf("register: insert refresh session: %v", err)
@@ -127,10 +140,15 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	var id, email, passwordHash, fullName string
+	var userStatus string
 	err := h.DB.QueryRow(ctx,
-		`SELECT id, email, password_hash, full_name FROM users WHERE email = $1 AND deleted_at IS NULL`,
+		`SELECT id, email, password_hash, full_name, status FROM users WHERE email = $1 AND deleted_at IS NULL`,
 		req.Email,
-	).Scan(&id, &email, &passwordHash, &fullName)
+	).Scan(&id, &email, &passwordHash, &fullName, &userStatus)
+	if err == nil && userStatus != "" && userStatus != "active" {
+		writeJSON(w, http.StatusForbidden, errorResponse{Error: "akun dinonaktifkan"})
+		return
+	}
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "invalid email or password"})
@@ -155,7 +173,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 
 	_, err = h.DB.Exec(ctx,
 		`INSERT INTO refresh_sessions (user_id, session_token_hash, expires_at) VALUES ($1, $2, $3)`,
-		id, tokens.RefreshToken, time.Now().Add(7*24*time.Hour),
+		id, hashToken(tokens.RefreshToken), time.Now().Add(7*24*time.Hour),
 	)
 	if err != nil {
 		log.Printf("login: insert refresh session: %v", err)
@@ -179,13 +197,15 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	hashed := hashToken(refreshToken.Value)
 	var userID, email, fullName string
+	var userStatus string
 	err = h.DB.QueryRow(ctx,
-		`SELECT u.id, u.email, u.full_name FROM refresh_sessions rs
+		`SELECT u.id, u.email, u.full_name, u.status FROM refresh_sessions rs
 		 JOIN users u ON u.id = rs.user_id
-		 WHERE rs.session_token_hash = $1 AND rs.revoked_at IS NULL AND rs.expires_at > now()`,
-		refreshToken.Value,
-	).Scan(&userID, &email, &fullName)
+		 WHERE (rs.session_token_hash = $1 OR rs.session_token_hash = $2) AND rs.revoked_at IS NULL AND rs.expires_at > now() AND u.deleted_at IS NULL`,
+		hashed, refreshToken.Value,
+	).Scan(&userID, &email, &fullName, &userStatus)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "invalid refresh token"})
@@ -195,13 +215,28 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "internal server error"})
 		return
 	}
+	if userStatus != "active" {
+		writeJSON(w, http.StatusForbidden, errorResponse{Error: "akun dinonaktifkan"})
+		return
+	}
 
-	_, err = h.DB.Exec(ctx,
-		`UPDATE refresh_sessions SET revoked_at = now() WHERE session_token_hash = $1`,
-		refreshToken.Value,
-	)
+	// atomic revoke old + insert new in tx to prevent reuse
+	tx, err := h.DB.Begin(ctx)
+	if err != nil {
+		log.Printf("refresh: begin tx: %v", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "internal server error"})
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	ct, err := tx.Exec(ctx, `UPDATE refresh_sessions SET revoked_at = now() WHERE (session_token_hash = $1 OR session_token_hash = $2) AND revoked_at IS NULL`, hashed, refreshToken.Value)
 	if err != nil {
 		log.Printf("refresh: revoke old session: %v", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "internal server error"})
+		return
+	}
+	if ct.RowsAffected() == 0 {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "refresh token already used"})
+		return
 	}
 
 	tokens, err := GenerateTokenPair(h.JWTSecret, userID, email)
@@ -211,12 +246,17 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = h.DB.Exec(ctx,
+	_, err = tx.Exec(ctx,
 		`INSERT INTO refresh_sessions (user_id, session_token_hash, expires_at) VALUES ($1, $2, $3)`,
-		userID, tokens.RefreshToken, time.Now().Add(7*24*time.Hour),
+		userID, hashToken(tokens.RefreshToken), time.Now().Add(7*24*time.Hour),
 	)
 	if err != nil {
 		log.Printf("refresh: insert new session: %v", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "internal server error"})
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("refresh: commit: %v", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "internal server error"})
 		return
 	}
@@ -232,18 +272,21 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	refreshToken, err := r.Cookie("refresh_token")
 	if err == nil && refreshToken.Value != "" {
+		hashed := hashToken(refreshToken.Value)
 		_, _ = h.DB.Exec(r.Context(),
-			`UPDATE refresh_sessions SET revoked_at = now() WHERE session_token_hash = $1`,
-			refreshToken.Value,
+			`UPDATE refresh_sessions SET revoked_at = now() WHERE session_token_hash = $1 OR session_token_hash = $2`,
+			hashed, refreshToken.Value,
 		)
 	}
 
+	secure := os.Getenv("APP_ENV") == "production"
 	http.SetCookie(w, &http.Cookie{
 		Name:     "refresh_token",
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	})
 
@@ -275,13 +318,71 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type updateProfileRequest struct {
+	FullName *string `json:"full_name,omitempty"`
+}
+
+func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
+	claims := GetClaims(r.Context())
+	if claims == nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
+		return
+	}
+
+	var req updateProfileRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid request body"})
+		return
+	}
+
+	if req.FullName != nil {
+		name := strings.TrimSpace(*req.FullName)
+		if len(name) < 2 || len(name) > 100 {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "nama harus 2-100 karakter"})
+			return
+		}
+	}
+
+	ctx := r.Context()
+
+	if req.FullName != nil {
+		_, err := h.DB.Exec(ctx,
+			`UPDATE users SET full_name = $1, updated_at = NOW() WHERE id = $2 AND deleted_at IS NULL`,
+			*req.FullName, claims.UserID,
+		)
+		if err != nil {
+			log.Printf("update profile: %v", err)
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "internal server error"})
+			return
+		}
+	}
+
+	var email, fullName string
+	err := h.DB.QueryRow(ctx,
+		`SELECT email, full_name FROM users WHERE id = $1 AND deleted_at IS NULL`,
+		claims.UserID,
+	).Scan(&email, &fullName)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, errorResponse{Error: "user not found"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, userResponse{
+		ID:       claims.UserID,
+		Email:    email,
+		FullName: fullName,
+	})
+}
+
 func setRefreshCookie(w http.ResponseWriter, token string) {
+	secure := os.Getenv("APP_ENV") == "production"
 	http.SetCookie(w, &http.Cookie{
 		Name:     "refresh_token",
 		Value:    token,
 		Path:     "/",
 		MaxAge:   7 * 24 * 60 * 60,
 		HttpOnly: true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	})
 }

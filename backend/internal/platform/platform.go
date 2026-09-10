@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/USERNAME-GITHUB-KAMU/task-group/backend/internal/config"
+	"github.com/alfianhamzah/task-group/backend/internal/config"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"

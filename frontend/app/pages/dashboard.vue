@@ -1,38 +1,67 @@
 <script setup>
-const { user } = useAuth()
+definePageMeta({ layout: 'dashboard' })
 
-definePageMeta({
-  layout: 'dashboard',
+const { user, orgId, token } = useAuth()
+const { get, setOrgId } = useApi()
+const toast = useToast()
+
+const loading = ref(true)
+const projects = ref([])
+const allTasks = ref([])
+
+function syncOrgId() {
+  const oid = orgId.value || (import.meta.client ? localStorage.getItem('auth:org_id') : null)
+  if (oid) setOrgId(oid)
+  return oid
+}
+
+onMounted(() => {
+  syncOrgId()
+  watch(orgId, syncOrgId)
+  const hasToken = token.value || (import.meta.client ? localStorage.getItem('auth:token') : null)
+  if (!hasToken) {
+    loading.value = false
+    return
+  }
+  fetchData()
 })
 
-const projects = ref([
-  { id: '1', name: 'Website Redesign', slug: 'website-redesign', description: 'Complete overhaul of the marketing site with new brand guidelines', taskCounts: { backlog: 5, todo: 8, in_progress: 3, review: 2, done: 12 }, members: [{ name: 'Alice', color: 'bg-violet-500' }, { name: 'Bob', color: 'bg-sky-500' }, { name: 'Charlie', color: 'bg-emerald-500' }] },
-  { id: '2', name: 'Mobile App', slug: 'mobile-app', description: 'Cross-platform mobile app for iOS and Android', taskCounts: { backlog: 3, todo: 4, in_progress: 6, review: 1, done: 8 }, members: [{ name: 'Diana', color: 'bg-rose-500' }, { name: 'Alice', color: 'bg-violet-500' }] },
-  { id: '3', name: 'API Backend', slug: 'api-backend', description: 'Core API service and microservices infrastructure', taskCounts: { backlog: 2, todo: 3, in_progress: 4, review: 3, done: 15 }, members: [{ name: 'Bob', color: 'bg-sky-500' }, { name: 'Charlie', color: 'bg-emerald-500' }, { name: 'Diana', color: 'bg-rose-500' }] },
-])
+async function fetchData() {
+  loading.value = true
+  try {
+    syncOrgId()
+    projects.value = await get('/api/v1/projects')
+    // Fetch tasks from all projects
+    const taskPromises = projects.value.map(p => get(`/api/v1/projects/${p.id}/tasks`).catch(() => []))
+    const taskArrays = await Promise.all(taskPromises)
+    allTasks.value = taskArrays.flat()
+  } catch (e) {
+    toast.error(e?.message || 'Gagal memuat dashboard')
+  } finally {
+    loading.value = false
+  }
+}
 
-const myTasks = ref([
-  { id: '1', key: 'TG-45', title: 'Implement dark mode toggle', project: 'Website Redesign', status: 'in_progress', priority: 'high', dueDate: '2026-09-05' },
-  { id: '2', key: 'TG-38', title: 'Design onboarding flow wireframes', project: 'Mobile App', status: 'todo', priority: 'medium', dueDate: '2026-09-08' },
-  { id: '3', key: 'TG-52', title: 'Fix responsive layout on tablet', project: 'Website Redesign', status: 'review', priority: 'urgent', dueDate: '2026-09-02' },
-  { id: '4', key: 'TG-29', title: 'Write unit tests for auth module', project: 'API Backend', status: 'todo', priority: 'medium', dueDate: '2026-09-10' },
-  { id: '5', key: 'TG-61', title: 'Update API documentation for v2', project: 'API Backend', status: 'backlog', priority: 'low', dueDate: null },
-])
+const myTasks = computed(() => allTasks.value.filter(t => t.assignee_id === user.value?.id).slice(0, 5))
 
-const activities = ref([
-  { id: '1', user: 'Bob', avatar: 'bg-sky-500', action: 'moved', target: 'TG-45', detail: 'from Todo to In Progress', project: 'Website Redesign', time: '2 minutes ago' },
-  { id: '2', user: 'Diana', avatar: 'bg-rose-500', action: 'created', target: 'TG-62', detail: '"Setup push notification service"', project: 'Mobile App', time: '15 minutes ago' },
-  { id: '3', user: 'Charlie', avatar: 'bg-emerald-500', action: 'commented on', target: 'TG-38', detail: '"Looks good, just one minor adjustment needed"', project: 'Mobile App', time: '1 hour ago' },
-  { id: '4', user: 'Alice', avatar: 'bg-violet-500', action: 'completed', target: 'TG-22', detail: '"Database migration script"', project: 'API Backend', time: '2 hours ago' },
-  { id: '5', user: 'Bob', avatar: 'bg-sky-500', action: 'assigned', target: 'TG-52', detail: 'to Alice', project: 'Website Redesign', time: '3 hours ago' },
-  { id: '6', user: 'Diana', avatar: 'bg-rose-500', action: 'created', target: 'TG-61', detail: '"Update API documentation for v2"', project: 'API Backend', time: '5 hours ago' },
-])
+const stats = computed(() => {
+  const total = allTasks.value.length
+  const active = allTasks.value.filter(t => t.status !== 'done' && t.status !== 'backlog').length
+  const inProgress = allTasks.value.filter(t => t.status === 'in_progress').length
+  const overdue = allTasks.value.filter(t => t.due_date && new Date(t.due_date) < new Date() && t.status !== 'done').length
+  return [
+    { label: 'Total Proyek', value: projects.value.length, icon: 'M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z', color: 'bg-indigo-500', textColor: 'text-indigo-600', bgColor: 'bg-indigo-50' },
+    { label: 'Total Tugas', value: total, icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2', color: 'bg-emerald-500', textColor: 'text-emerald-600', bgColor: 'bg-emerald-50' },
+    { label: 'In Progress', value: inProgress, icon: 'M13 10V3L4 14h7v7l9-11h-7z', color: 'bg-amber-500', textColor: 'text-amber-600', bgColor: 'bg-amber-50' },
+    { label: 'Terlambat', value: overdue, icon: 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z', color: 'bg-red-500', textColor: 'text-red-600', bgColor: 'bg-red-50' },
+  ]
+})
 
 const statusConfig = {
   backlog: { label: 'Backlog', dot: 'bg-gray-400' },
   todo: { label: 'Todo', dot: 'bg-blue-500' },
   in_progress: { label: 'In Progress', dot: 'bg-amber-500' },
-  review: { label: 'In Review', dot: 'bg-purple-500' },
+  in_review: { label: 'In Review', dot: 'bg-purple-500' },
   done: { label: 'Done', dot: 'bg-emerald-500' },
 }
 
@@ -44,133 +73,175 @@ const priorityConfig = {
 }
 
 function getProjectColor(i) {
-  return ['bg-indigo-500', 'bg-emerald-500', 'bg-amber-500'][i % 3]
+  return ['bg-indigo-500', 'bg-emerald-500', 'bg-amber-500', 'bg-rose-500', 'bg-sky-500'][i % 5]
 }
 
 function isOverdue(dateStr) {
   if (!dateStr) return false
   return new Date(dateStr) < new Date()
 }
+
+const avatarColors = ['bg-violet-500', 'bg-sky-500', 'bg-emerald-500', 'bg-rose-500', 'bg-amber-500']
 </script>
 
 <template>
   <div class="p-4 lg:p-6 max-w-7xl mx-auto space-y-6 w-full">
-    <!-- Page Header -->
     <div class="flex items-center justify-between">
       <div>
-        <h1 class="text-xl font-bold text-gray-900">Dashboard</h1>
-        <p class="mt-0.5 text-sm text-gray-500">Welcome back, {{ user?.full_name || 'Alice' }}. Here's what's happening.</p>
+        <h1 class="text-xl font-bold text-gray-900 dark:text-white">Dashboard</h1>
+        <p class="mt-0.5 text-sm text-gray-500 dark:text-gray-400">Selamat datang kembali, {{ user?.full_name || 'User' }}. Berikut ringkasan hari ini.</p>
       </div>
-      <button class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center gap-2">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
-        New Task
-      </button>
     </div>
+
+    <!-- Stats Cards -->
+    <Transition name="fade" mode="out-in">
+      <div v-if="loading" key="stats-skeleton" class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div v-for="i in 4" :key="i" class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4 animate-pulse">
+          <div class="h-4 bg-gray-200 dark:bg-gray-700 rounded w-20 mb-3"></div>
+          <div class="h-8 bg-gray-200 dark:bg-gray-700 rounded w-12"></div>
+        </div>
+      </div>
+      <div v-else key="stats-data" class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div v-for="(stat, i) in stats" :key="i" class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4 hover:shadow-md transition-all group">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-lg flex items-center justify-center" :class="stat.bgColor">
+              <svg class="w-5 h-5" :class="stat.textColor" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" :d="stat.icon" /></svg>
+            </div>
+            <div>
+              <p class="text-xs text-gray-500 dark:text-gray-400 font-medium">{{ stat.label }}</p>
+              <p class="text-2xl font-bold text-gray-900 dark:text-white">{{ stat.value }}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Transition>
 
     <!-- My Tasks -->
     <section>
       <div class="flex items-center justify-between mb-3">
-        <h2 class="text-sm font-semibold text-gray-900">My Tasks</h2>
-        <NuxtLink to="/my-tasks" class="text-xs font-medium text-indigo-600 hover:text-indigo-700">View all</NuxtLink>
+        <h2 class="text-sm font-semibold text-gray-900 dark:text-white">Tugas Saya</h2>
+        <NuxtLink to="/my-tasks" class="text-xs font-medium text-indigo-600 hover:text-indigo-700 transition-colors flex items-center gap-1">
+          Lihat semua
+          <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
+        </NuxtLink>
       </div>
-      <div class="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <table class="w-full">
-          <thead>
-            <tr class="border-b border-gray-100">
-              <th class="text-left text-[11px] font-semibold text-gray-400 uppercase tracking-wider px-4 py-2.5">Task</th>
-              <th class="text-left text-[11px] font-semibold text-gray-400 uppercase tracking-wider px-4 py-2.5 hidden sm:table-cell">Project</th>
-              <th class="text-left text-[11px] font-semibold text-gray-400 uppercase tracking-wider px-4 py-2.5">Status</th>
-              <th class="text-right text-[11px] font-semibold text-gray-400 uppercase tracking-wider px-4 py-2.5">Due</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-gray-50">
-            <tr v-for="task in myTasks" :key="task.id" class="hover:bg-gray-50 transition-colors cursor-pointer">
-              <td class="px-4 py-2.5">
-                <div class="flex items-center gap-2.5">
-                  <div class="w-2 h-2 rounded-full shrink-0" :class="priorityConfig[task.priority]"></div>
-                  <span class="text-xs font-mono text-gray-400 shrink-0">{{ task.key }}</span>
-                  <span class="text-sm text-gray-900 truncate">{{ task.title }}</span>
-                </div>
-              </td>
-              <td class="px-4 py-2.5 hidden sm:table-cell">
-                <span class="text-xs text-gray-500">{{ task.project }}</span>
-              </td>
-              <td class="px-4 py-2.5">
-                <span class="text-xs text-gray-500 inline-flex items-center gap-1.5">
-                  <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="statusConfig[task.status].dot"></span>
-                  {{ statusConfig[task.status].label }}
-                </span>
-              </td>
-              <td class="px-4 py-2.5 text-right">
-                <span v-if="task.dueDate" class="text-xs" :class="isOverdue(task.dueDate) ? 'text-red-500 font-medium' : 'text-gray-400'">
-                  {{ new Date(task.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) }}
-                </span>
-                <span v-else class="text-xs text-gray-300">—</span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
 
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-      <!-- Recent Activity -->
-      <section class="lg:col-span-2">
-        <div class="flex items-center justify-between mb-3">
-          <h2 class="text-sm font-semibold text-gray-900">Recent Activity</h2>
-        </div>
-        <div class="bg-white rounded-xl border border-gray-200">
-          <div v-for="(act, i) in activities" :key="act.id" class="flex items-start gap-3 px-4 py-3" :class="i < activities.length - 1 ? 'border-b border-gray-50' : ''">
-            <div class="w-7 h-7 rounded-full shrink-0 flex items-center justify-center mt-0.5" :class="act.avatar">
-              <span class="text-[9px] text-white font-bold">{{ act.user.charAt(0) }}</span>
-            </div>
-            <div class="flex-1 min-w-0">
-              <p class="text-sm text-gray-700">
-                <span class="font-medium">{{ act.user }}</span>
-                {{ act.action }}
-                <span class="font-medium">{{ act.target }}</span>
-                <span class="text-gray-400"> — {{ act.detail }}</span>
-              </p>
-              <p class="text-xs text-gray-400 mt-0.5">{{ act.time }} in {{ act.project }}</p>
+      <Transition name="fade" mode="out-in">
+        <div v-if="loading" key="tasks-skeleton" class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+          <div class="divide-y divide-gray-50 dark:divide-gray-700">
+            <div v-for="i in 5" :key="i" class="px-4 py-3 flex items-center gap-4 animate-pulse">
+              <div class="w-2 h-2 rounded-full bg-gray-200 dark:bg-gray-700"></div>
+              <div class="h-3 bg-gray-200 dark:bg-gray-700 rounded w-16"></div>
+              <div class="h-3 bg-gray-200 dark:bg-gray-700 rounded flex-1"></div>
+              <div class="h-3 bg-gray-200 dark:bg-gray-700 rounded w-20"></div>
             </div>
           </div>
         </div>
-      </section>
 
-      <!-- Projects -->
-      <section>
-        <div class="flex items-center justify-between mb-3">
-          <h2 class="text-sm font-semibold text-gray-900">Projects</h2>
-          <NuxtLink to="/projects" class="text-xs font-medium text-indigo-600 hover:text-indigo-700">View all</NuxtLink>
+        <div v-else-if="myTasks.length === 0" key="tasks-empty" class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-8 text-center">
+          <p class="text-sm text-gray-400 dark:text-gray-500">Tidak ada tugas yang ditugaskan kepada Anda.</p>
         </div>
-        <div class="space-y-3">
+
+        <div v-else key="tasks-data" class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+          <table class="w-full">
+            <thead>
+              <tr class="border-b border-gray-100 dark:border-gray-700">
+                <th class="text-left text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-4 py-2.5">Tugas</th>
+                <th class="text-left text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-4 py-2.5 hidden sm:table-cell">Proyek</th>
+                <th class="text-left text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-4 py-2.5">Status</th>
+                <th class="text-right text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-4 py-2.5">Deadline</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-50 dark:divide-gray-700">
+              <tr v-for="task in myTasks" :key="task.id" class="hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer group" @click="navigateTo(`/tasks/${task.id}`)">
+                <td class="px-4 py-3">
+                  <div class="flex items-center gap-2.5">
+                    <div class="w-2 h-2 rounded-full shrink-0 transition-transform group-hover:scale-150" :class="priorityConfig[task.priority] || 'bg-gray-400'"></div>
+                    <span class="text-xs font-mono text-gray-400 dark:text-gray-500 shrink-0">{{ task.key || 'TG-' + String(task.id).slice(-2) }}</span>
+                    <span class="text-sm text-gray-900 dark:text-white truncate group-hover:text-indigo-600 transition-colors">{{ task.title }}</span>
+                  </div>
+                </td>
+                <td class="px-4 py-3 hidden sm:table-cell">
+                  <span class="text-xs text-gray-500 dark:text-gray-400">{{ projects.find(p => p.id === task.project_id)?.name || '-' }}</span>
+                </td>
+                <td class="px-4 py-3">
+                  <span class="text-xs text-gray-500 dark:text-gray-400 inline-flex items-center gap-1.5">
+                    <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="statusConfig[task.status]?.dot || 'bg-gray-400'"></span>
+                    {{ statusConfig[task.status]?.label || task.status }}
+                  </span>
+                </td>
+                <td class="px-4 py-3 text-right">
+                  <span v-if="task.due_date" class="text-xs" :class="isOverdue(task.due_date) ? 'text-red-500 dark:text-red-400 font-medium' : 'text-gray-400 dark:text-gray-500'">
+                    {{ new Date(task.due_date).toLocaleDateString('id-ID', { month: 'short', day: 'numeric' }) }}
+                  </span>
+                  <span v-else class="text-xs text-gray-300 dark:text-gray-600">—</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </Transition>
+    </section>
+
+    <!-- Projects -->
+    <section>
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-semibold text-gray-900 dark:text-white">Proyek</h2>
+        <NuxtLink to="/projects" class="text-xs font-medium text-indigo-600 hover:text-indigo-700 transition-colors flex items-center gap-1">
+          Lihat semua
+          <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
+        </NuxtLink>
+      </div>
+
+      <Transition name="fade" mode="out-in">
+        <div v-if="loading" key="projects-skeleton" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div v-for="i in 3" :key="i" class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4 animate-pulse">
+            <div class="h-3 bg-gray-200 dark:bg-gray-700 rounded w-32 mb-2"></div>
+            <div class="h-2.5 bg-gray-100 dark:bg-gray-700 rounded w-full mb-3"></div>
+            <div class="h-1 bg-gray-100 dark:bg-gray-700 rounded-full w-full"></div>
+          </div>
+        </div>
+
+        <div v-else-if="projects.length === 0" key="projects-empty" class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-8 text-center">
+          <p class="text-sm text-gray-400 dark:text-gray-500">Belum ada proyek. Buat proyek pertama Anda!</p>
+        </div>
+
+        <div v-else key="projects-data" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           <NuxtLink
             v-for="(project, i) in projects"
             :key="project.id"
             :to="`/projects/${project.slug}`"
-            class="block bg-white rounded-xl border border-gray-200 p-4 hover:shadow-md transition-shadow"
+            class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4 hover:shadow-md hover:border-indigo-200 dark:hover:border-indigo-500 transition-all group"
           >
             <div class="flex items-center gap-2.5">
-              <div class="w-2.5 h-2.5 rounded-sm" :class="getProjectColor(i)"></div>
-              <h3 class="text-sm font-semibold text-gray-900">{{ project.name }}</h3>
+              <div class="w-2.5 h-2.5 rounded-sm group-hover:scale-125 transition-transform" :class="getProjectColor(i)"></div>
+              <h3 class="text-sm font-semibold text-gray-900 dark:text-white group-hover:text-indigo-600 transition-colors">{{ project.name }}</h3>
             </div>
-            <p class="mt-1.5 text-xs text-gray-500 line-clamp-2">{{ project.description }}</p>
-
-            <div class="mt-3 h-1 rounded-full bg-gray-100 overflow-hidden">
-              <div class="h-full bg-indigo-500 rounded-full" :style="{ width: (project.taskCounts.done / Object.values(project.taskCounts).reduce((a,b)=>a+b,0) * 100) + '%' }"></div>
-            </div>
-
-            <div class="mt-2.5 flex items-center justify-between">
-              <div class="flex -space-x-1.5">
-                <div v-for="(m, j) in project.members.slice(0, 3)" :key="j" class="w-5 h-5 rounded-full flex items-center justify-center border-2 border-white" :class="m.color">
-                  <span class="text-[7px] text-white font-bold">{{ m.name.charAt(0) }}</span>
-                </div>
+            <p v-if="project.description" class="mt-1.5 text-xs text-gray-500 dark:text-gray-400 line-clamp-2">{{ project.description }}</p>
+            <div class="mt-3 flex items-center justify-between">
+              <span class="text-[11px] text-gray-400 dark:text-gray-500">{{ new Date(project.created_at).toLocaleDateString('id-ID', { month: 'short', day: 'numeric', year: 'numeric' }) }}</span>
+              <div class="w-5 h-5 rounded-full flex items-center justify-center" :class="avatarColors[i % avatarColors.length]">
+                <span class="text-[7px] text-white font-bold">{{ user?.full_name?.charAt(0) || 'U' }}</span>
               </div>
-              <span class="text-[11px] text-gray-400">{{ Object.values(project.taskCounts).reduce((a,b)=>a+b,0) }} tasks</span>
             </div>
           </NuxtLink>
         </div>
-      </section>
-    </div>
+      </Transition>
+    </section>
   </div>
 </template>
+
+<style>
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+.fade-enter-from {
+  opacity: 0;
+  transform: translateY(4px);
+}
+.fade-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+</style>
